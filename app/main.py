@@ -7,7 +7,7 @@ import logging
 from flask import Flask, request, jsonify
 import face_recognition
 import dlib
-from PIL import Image
+from PIL import Image, ImageOps
 from pillow_heif import register_heif_opener
 import numpy as np
 import time
@@ -153,20 +153,28 @@ def detect_faces():
         
         # Load and resize image if needed
         try:
-            image = face_recognition.load_image_file(file_path)
+            # Load with PIL first to handle EXIF orientation
+            pil_image = Image.open(file_path)
+            
+            # CRITICAL: Apply EXIF orientation before processing
+            # Phone cameras often save images rotated with EXIF metadata
+            pil_image = ImageOps.exif_transpose(pil_image)
+            
+            # Convert to RGB if needed
+            if pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
             
             # Resize if image is too large (improves speed)
-            height, width = image.shape[:2]
+            width, height = pil_image.size
             if max(height, width) > MAX_IMAGE_SIZE:
                 scale = MAX_IMAGE_SIZE / max(height, width)
                 new_width = int(width * scale)
                 new_height = int(height * scale)
-                
-                pil_image = Image.fromarray(image)
                 pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                image = np.array(pil_image)
-                
                 logger.info(f"Resized image: {width}x{height} → {new_width}x{new_height}")
+            
+            # Convert to numpy array for face_recognition
+            image = np.array(pil_image)
         except Exception as e:
             logger.error(f"Failed to load image {file_path}: {str(e)}")
             return jsonify({'error': f'Failed to load image: {str(e)}'}), 400
@@ -299,18 +307,23 @@ def batch_detect_faces():
                     })
                     continue
                 
-                image = face_recognition.load_image_file(file_path)
+                # Load with PIL first to handle EXIF orientation
+                pil_image = Image.open(file_path)
+                pil_image = ImageOps.exif_transpose(pil_image)
+                if pil_image.mode != 'RGB':
+                    pil_image = pil_image.convert('RGB')
                 
                 # Resize if needed
-                height, width = image.shape[:2]
+                width, height = pil_image.size
                 if max(height, width) > MAX_IMAGE_SIZE:
                     scale = MAX_IMAGE_SIZE / max(height, width)
-                    pil_image = Image.fromarray(image)
                     pil_image = pil_image.resize(
                         (int(width * scale), int(height * scale)),
                         Image.Resampling.LANCZOS
                     )
-                    image = np.array(pil_image)
+                
+                # Convert to numpy array for face_recognition
+                image = np.array(pil_image)
                 
                 face_locations_with_conf = detect_faces_with_confidence(image)
                 face_locations = [(top, right, bottom, left) for (top, right, bottom, left, _) in face_locations_with_conf]
