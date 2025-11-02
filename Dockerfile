@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     liblapack-dev \
     libjpeg-dev \
     libpng-dev \
+    libheif-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

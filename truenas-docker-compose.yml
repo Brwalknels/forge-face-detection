@@ -1,0 +1,68 @@
+version: '3.8'
+
+# Forge + Face Detection Microservice
+# Deploy both services with shared network for communication
+
+networks:
+  forge-network:
+    driver: bridge
+
+services:
+  forge:
+    image: ghcr.io/brwalknels/forge:latest
+    container_name: forge
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - STORAGE_PATH=/app
+      - JWT_SECRET=forge-jwt-secret-2025-nelson-family-pass
+      - ADMIN_SESSION_SECRET=forge-admin-session-secret-2025-pass
+      - LOCAL_SERVER_IP=http://10.0.0.120:3000
+      - REMOTE_ACCESS_ENABLED=true
+      - REMOTE_ACCESS_DOMAIN=mastersyncforge.com
+      - CORS_ORIGIN=https://mastersyncforge.com
+      - LOG_FILE_PATH=/app/logs
+      - TZ=America/Chicago
+      - FACE_DETECTION_SERVICE_URL=http://forge-face-detection:5000
+    volumes:
+      - /mnt/NelsonMain/Forge/private:/app/private
+      - /mnt/NelsonMain/Forge/metadata:/app/metadata
+      - /mnt/NelsonMain/Forge/gallery:/app/gallery
+      - /mnt/NelsonMain/Forge/data:/app/data
+      - /mnt/NelsonMain/Forge/logs:/var/log/file-sync-api
+      - /mnt/NelsonMain/Forge/models:/app/models
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - forge-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4096M
+
+  forge-face-detection:
+    image: ghcr.io/brwalknels/forge-face-detection:latest
+    container_name: forge-face-detection
+    restart: unless-stopped
+    environment:
+      - MODEL_TYPE=hog
+      - LOG_LEVEL=INFO
+    volumes:
+      - /mnt/NelsonMain/Forge/private:/app/private:ro
+      - /mnt/NelsonMain/Forge/metadata:/app/metadata:ro
+    networks:
+      - forge-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2048M
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

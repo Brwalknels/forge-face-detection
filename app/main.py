@@ -7,9 +7,13 @@ import logging
 from flask import Flask, request, jsonify
 import face_recognition
 from PIL import Image
+from pillow_heif import register_heif_opener
 import numpy as np
 import time
 from pathlib import Path
+
+# Register HEIF/HEIC support for PIL
+register_heif_opener()
 
 # Configure logging
 logging.basicConfig(
