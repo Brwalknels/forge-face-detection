@@ -6,6 +6,7 @@ import os
 import logging
 from flask import Flask, request, jsonify
 import face_recognition
+import dlib
 from PIL import Image
 from pillow_heif import register_heif_opener
 import numpy as np
@@ -34,6 +35,58 @@ logger.info(f"Model Type: {MODEL_TYPE}")
 logger.info(f"Max Image Size: {MAX_IMAGE_SIZE}px")
 logger.info(f"Face Tolerance: {FACE_DETECTION_TOLERANCE}")
 
+# Initialize CNN detector if using CNN model (for confidence scores)
+cnn_face_detector = None
+if MODEL_TYPE == 'cnn':
+    try:
+        cnn_face_detector = dlib.cnn_face_detection_model_v1(
+            dlib.cnn_face_detection_model_v1.get_files()[0]
+        )
+        logger.info("CNN detector initialized for confidence score extraction")
+    except Exception as e:
+        logger.warning(f"Failed to initialize CNN detector: {e}. Using face_recognition fallback.")
+
+
+def detect_faces_with_confidence(image):
+    """
+    Detect faces and return locations with confidence scores.
+    
+    For CNN model: Uses dlib CNN detector to get confidence scores (0.0-1.0+)
+    For HOG model: Uses face_recognition (no confidence available)
+    
+    Returns:
+        List of tuples: [(top, right, bottom, left, confidence), ...]
+    """
+    if MODEL_TYPE == 'cnn' and cnn_face_detector is not None:
+        # Use dlib CNN detector directly to get confidence scores
+        try:
+            # CNN detector expects RGB image
+            detections = cnn_face_detector(image, 1)  # 1 = upsample once
+            
+            face_locations_with_conf = []
+            for detection in detections:
+                rect = detection.rect
+                confidence = detection.confidence  # Real confidence score!
+                
+                # Convert dlib rectangle to (top, right, bottom, left) format
+                top = max(0, rect.top())
+                right = min(image.shape[1], rect.right())
+                bottom = min(image.shape[0], rect.bottom())
+                left = max(0, rect.left())
+                
+                face_locations_with_conf.append((top, right, bottom, left, float(confidence)))
+            
+            logger.info(f"CNN detector found {len(face_locations_with_conf)} faces with confidence scores")
+            return face_locations_with_conf
+            
+        except Exception as e:
+            logger.warning(f"CNN confidence extraction failed: {e}. Falling back to face_recognition.")
+    
+    # Fallback: Use face_recognition (HOG model or CNN fallback)
+    face_locations = face_recognition.face_locations(image, model=MODEL_TYPE)
+    # No confidence scores available - return 1.0 for all
+    return [(top, right, bottom, left, 1.0) for (top, right, bottom, left) in face_locations]
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -45,7 +98,8 @@ def health_check():
         'status': 'ready',
         'service': 'forge-face-detection',
         'model': MODEL_TYPE,
-        'version': '1.0.0'
+        'version': '1.1.0',
+        'confidence_scores': MODEL_TYPE == 'cnn' and cnn_face_detector is not None
     }), 200
 
 
@@ -117,10 +171,10 @@ def detect_faces():
             logger.error(f"Failed to load image {file_path}: {str(e)}")
             return jsonify({'error': f'Failed to load image: {str(e)}'}), 400
         
-        # Detect face locations
-        face_locations = face_recognition.face_locations(image, model=MODEL_TYPE)
+        # Detect face locations with confidence scores
+        face_locations_with_conf = detect_faces_with_confidence(image)
         
-        if not face_locations:
+        if not face_locations_with_conf:
             logger.info(f"No faces detected in {file_id}")
             processing_time = int((time.time() - start_time) * 1000)
             return jsonify({
@@ -130,6 +184,10 @@ def detect_faces():
                 'processingTimeMs': processing_time
             }), 200
         
+        # Extract locations and confidence scores
+        face_locations = [(top, right, bottom, left) for (top, right, bottom, left, _) in face_locations_with_conf]
+        face_confidences = [conf for (_, _, _, _, conf) in face_locations_with_conf]
+        
         # Get face encodings (128-dimensional descriptors)
         face_encodings = face_recognition.face_encodings(image, face_locations)
         
@@ -138,7 +196,7 @@ def detect_faces():
         
         # Build response
         faces = []
-        for i, (location, encoding, landmarks) in enumerate(zip(face_locations, face_encodings, face_landmarks_list)):
+        for i, (location, encoding, landmarks, confidence) in enumerate(zip(face_locations, face_encodings, face_landmarks_list, face_confidences)):
             top, right, bottom, left = location
             
             face_data = {
@@ -156,7 +214,7 @@ def detect_faces():
                     key: [(int(x), int(y)) for x, y in points]
                     for key, points in landmarks.items()
                 },
-                'confidence': 1.0  # dlib doesn't provide confidence scores
+                'confidence': round(float(confidence), 3)  # Real confidence for CNN, 1.0 for HOG
             }
             faces.append(face_data)
         
@@ -254,12 +312,14 @@ def batch_detect_faces():
                     )
                     image = np.array(pil_image)
                 
-                face_locations = face_recognition.face_locations(image, model=MODEL_TYPE)
+                face_locations_with_conf = detect_faces_with_confidence(image)
+                face_locations = [(top, right, bottom, left) for (top, right, bottom, left, _) in face_locations_with_conf]
+                face_confidences = [conf for (_, _, _, _, conf) in face_locations_with_conf]
                 face_encodings = face_recognition.face_encodings(image, face_locations)
                 face_landmarks_list = face_recognition.face_landmarks(image, face_locations)
                 
                 faces = []
-                for i, (location, encoding, landmarks) in enumerate(zip(face_locations, face_encodings, face_landmarks_list)):
+                for i, (location, encoding, landmarks, confidence) in enumerate(zip(face_locations, face_encodings, face_landmarks_list, face_confidences)):
                     top, right, bottom, left = location
                     faces.append({
                         'id': f"{file_id}-face-{i}",
@@ -276,7 +336,7 @@ def batch_detect_faces():
                             key: [(int(x), int(y)) for x, y in points]
                             for key, points in landmarks.items()
                         },
-                        'confidence': 1.0
+                        'confidence': round(float(confidence), 3)
                     })
                 
                 results.append({
